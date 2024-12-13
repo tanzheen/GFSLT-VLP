@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -P volta_pilot
+#PBS -j oe
+#PBS -N zhou_VLP
+#PBS -q volta_gpu
+#PBS -l select=1:ncpus=5:mem=50gb:ngpus=1
+#PBS -l walltime=72:00:00
+
+cd $PBS_O_WORKDIR; 
+cd GFSLT-VLP
+np=$(cat ${PBS_NODEFILE} | wc -l);
+
+image="/app1/common/singularity-img/hopper/pytorch/pytorch_2.3.0_cuda_12.4_ngc_24.04.sif"
+
+singularity exec $image bash << EOF > stdout.$PBS_JOBID 2> stderr.$PBS_JOBID
+export PATH=$PATH:/hpctmp/ccekwk/volta_py/volta_llm/local/bin
+export PYTHONPATH=$PYTHONPATH:/hpctmp/nus_id/volta_py/volta_llm/local/lib/python3.10/dist-packages/
+export HF_HOME=/hpctmp/nus_id/cache/
+export XDG_CACHE_HOME=/hpctmp/nus_id/cache
+python generate_slt.py --batch-size 2 --epochs 200 --opt sgd --lr 0.01 --output_dir out/Gloss-Free --finetune out/Gloss-Free/checkpoint.pth
+
+EOF

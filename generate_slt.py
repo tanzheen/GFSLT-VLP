@@ -59,6 +59,7 @@ import torch.distributed as dist
 # global definition
 from definition import *
 
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Gloss-free Sign Language Translation script', add_help=False)
     parser.add_argument('--batch-size', default=16, type=int)
@@ -131,7 +132,7 @@ def get_args_parser():
     parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem',
                         help='')
     parser.set_defaults(pin_mem=True)
-    parser.add_argument('--config', type=str, default='./configs/config_gloss_free.yaml')
+    parser.add_argument('--config', type=str, default='./configs/config_gloss_free_gen.yaml')
 
     # *Drop out params
     parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
@@ -161,6 +162,7 @@ def get_args_parser():
     parser.add_argument('--visualize', action='store_true')
 
     return parser
+
 
 def main(args, config):
     utils.init_distributed_mode(args)
@@ -213,247 +215,72 @@ def main(args, config):
     model = gloss_free_model(config, args)
     model.to(device)
     print(model)
-
     if args.finetune:
         print('***********************************')
         print('Load parameters for Visual Encoder...')
         print('***********************************')
         state_dict = torch.load(args.finetune, map_location='cpu')
-        new_state_dict = OrderedDict()
-        for k, v in state_dict['model'].items():
-            if 'conv_2d' in k or 'conv_1d' in k:
-                k = 'backbone.'+'.'.join(k.split('.')[2:])
-                new_state_dict[k] = v
-            if 'trans_encoder' in k:
-                k = 'mbart.model.encoder.'+'.'.join(k.split('.')[2:])
-                new_state_dict[k] = v
-            
-            if 'text_decoder' in state_dict:
-                for k, v in state_dict['text_decoder'].items():
-                    if 'decoder' in k:
-                        k = 'mbart.model.decoder.'+'.'.join(k.split('.')[2:])
-                        new_state_dict[k] = v
-            
-        # *replace the word embedding
-        model_dict = torch.load(config['model']['transformer']+'/pytorch_model.bin', map_location='cpu')
-        for k, v in model_dict.items():
-            if 'decoder.embed_tokens.weight' in k:
-                k = 'mbart.' + k
-                new_state_dict[k] = v
-            if 'decoder.embed_positions.weight' in k:
-                k = 'mbart.' + k
-                new_state_dict[k] = v
 
-        ret = model.load_state_dict(new_state_dict, strict=False)
+        ret = model.load_state_dict(state_dict['model'], strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
 
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-        model_without_ddp = model.module
-    n_parameters = utils.count_parameters_in_MB(model_without_ddp)
-    print(f'number of params: {n_parameters}M')
+        model_without_ddp = model
+        if args.distributed:
+            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+            model_without_ddp = model.module
+        n_parameters = utils.count_parameters_in_MB(model_without_ddp)
+        print(f'number of params: {n_parameters}M')
 
-    optimizer = create_optimizer(args, model_without_ddp)
+        mixup_fn = None
+        mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
+        if mixup_active:
+            mixup_fn = Mixup(
+                mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
+                prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
+                label_smoothing=0.2, num_classes=2454)
 
-    lr_scheduler = scheduler.CosineAnnealingLR(
-                optimizer=optimizer,  
-                eta_min=1e-8,
-                T_max=args.epochs,
-            )
-    loss_scaler = NativeScaler()
+        if mixup_active:
+            # smoothing is handled with mixup label transform
+            criterion = SoftTargetCrossEntropy()
+        else:
+            criterion = torch.nn.CrossEntropyLoss(ignore_index=PAD_IDX,label_smoothing=0.2)
 
-    mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
-    if mixup_active:
-        mixup_fn = Mixup(
-            mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-            label_smoothing=0.2, num_classes=2454)
+        output_dir = Path(args.output_dir)
 
-    if mixup_active:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    else:
-        criterion = torch.nn.CrossEntropyLoss(ignore_index=PAD_IDX,label_smoothing=0.2)
-
-    output_dir = Path(args.output_dir)
-    
-    if args.resume:
-        print('Resuming Model Parameters... ')
-        checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'], strict=True)
-        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-            args.start_epoch = checkpoint['epoch'] + 1
-
-    if args.eval:
-        if not args.resume:
-            logger.warning('Please specify the trained model: --resume /path/to/best_checkpoint.pth')
-        test_stats = evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
+        test_stats, dev_pred, dev_ref = evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
         print(f"BELU-4 of the network on the {len(dev_dataloader)} dev videos: {test_stats['belu4']:.2f} ")
-        test_stats = evaluate(args, test_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
+        test_stats, test_pred, test_ref = evaluate(args, test_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
         print(f"BELU-4 of the network on the {len(test_dataloader)} test videos: {test_stats['belu4']:.2f}")
+        # Define the folder where you want to save the files
+        output_folder = os.path.join(output_dir, "predictions")
+        # Create the folder if it doesn't exist
+        os.makedirs(output_folder, exist_ok=True)
+
+        # Save list1 to a file
+        with open(os.path.join(output_folder, "dev_pred.txt"), "w", encoding="utf-8") as file1:
+            for line in dev_pred:
+                file1.write(line + "\n")  # Write each string on a new line
+
+        # Save list2 to a file
+        with open(os.path.join(output_folder, "dev_ref.txt"), "w", encoding="utf-8") as file2:
+            for line in dev_ref:
+                file2.write(line + "\n")
+        
+        # Save list1 to a file
+        with open(os.path.join(output_folder, "test_pred.txt"), "w", encoding="utf-8") as file3:
+            for line in test_pred:
+                file3.write(line + "\n")  # Write each string on a new line
+
+        # Save list2 to a file
+        with open(os.path.join(output_folder, "test_ref.txt"), "w", encoding="utf-8") as file4: 
+            for line in test_ref:
+                file4.write(line + "\n")
+
+
         return
 
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
-    for epoch in range(args.start_epoch, args.epochs):
-        
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
-        
-        train_stats = train_one_epoch(args, model, criterion, train_dataloader, optimizer, device, epoch, config, loss_scaler, mixup_fn)
-        lr_scheduler.step(epoch)
-
-        if args.output_dir and utils.is_main_process():
-            checkpoint_paths = [output_dir / f'checkpoint.pth']
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                }, checkpoint_path)
-        
-        test_stats = evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
-        print(f"BELU-4 of the network on the {len(dev_dataloader)} dev videos: {test_stats['belu4']:.2f}")
-
-        if max_accuracy < test_stats["belu4"]:
-            max_accuracy = test_stats["belu4"]
-            if args.output_dir and utils.is_main_process():
-                checkpoint_paths = [output_dir / 'best_checkpoint.pth']
-                for checkpoint_path in checkpoint_paths:
-                    utils.save_on_master({
-                        'model': model_without_ddp.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'lr_scheduler': lr_scheduler.state_dict(),
-                        'epoch': epoch,
-                        'args': args,
-                    }, checkpoint_path)
-            
-        print(f'Max BELU-4: {max_accuracy:.2f}%')
-        # if utils.is_main_process():
-        #     wandb.log({'epoch':epoch+1,'training/train_loss':train_stats['loss'], 'dev/dev_loss':test_stats['loss'], 'dev/Bleu_4':test_stats['belu4'], 'dev/Best_Bleu_4': max_accuracy})
-
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
-        
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-    
-    # Last epoch
-    test_on_last_epoch = True
-    if test_on_last_epoch and args.output_dir:
-        checkpoint = torch.load(args.output_dir+'/best_checkpoint.pth', map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'], strict=True)
-
-        test_stats = evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
-        print(f"BELU-4 of the network on the {len(dev_dataloader)} dev videos: {test_stats['belu4']:.2f}")
-        
-        test_stats = evaluate(args, test_dataloader, model, model_without_ddp, tokenizer, criterion, config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device)
-        print(f"BELU-4 of the network on the {len(test_dataloader)} test videos: {test_stats['belu4']:.2f}")
-
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
-
-# def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss,
-#                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-#                     device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 0,
-#                     set_training_mode=True):
-#     model.train(set_training_mode)
-
-#     metric_logger = utils.MetricLogger(delimiter="  ")
-#     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-#     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-#     print_freq = 10
-
-#     for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-
-#         out_logits = model(src_input, tgt_input)
-#         label = tgt_input['input_ids'].reshape(-1)
-#         logits = out_logits.reshape(-1,out_logits.shape[-1])
-#         loss = criterion(logits, label.to(device, non_blocking=True))
-
-#         optimizer.zero_grad()
-#         loss.backward()
-#         optimizer.step()
-
-#         loss_value = loss.item()
-#         if not math.isfinite(loss_value):
-#             print("Loss is {}, stopping training".format(loss_value))
-#             sys.exit(1)
-
-#         metric_logger.update(loss=loss_value)
-#         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-#         metric_logger.update(lr_mbart=round(float(optimizer.param_groups[1]["lr"]), 8))
-
-#         if (step+1) % 10 == 0 and args.visualize and utils.is_main_process():
-#             utils.visualization(model.module.visualize())
-        
-#     # gather the stats from all processes
-#     metric_logger.synchronize_between_processes()
-#     print("Averaged stats:", metric_logger)
-
-#     return  {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-
-def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss,
-                    data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 0,
-                    set_training_mode=True, gradient_accumulation_steps=4):
-    model.train(set_training_mode)
-
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    print_freq = 10
-
-    optimizer.zero_grad()  # Initialize gradients
-
-    for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-        # Forward pass
-        out_logits = model(src_input, tgt_input)
-        label = tgt_input['input_ids'].reshape(-1)
-        logits = out_logits.reshape(-1, out_logits.shape[-1])
-        loss = criterion(logits, label.to(device, non_blocking=True)) / gradient_accumulation_steps  # Scale loss
-
-        # Backward pass
-        loss.backward()
-
-        # Perform optimizer step and zero gradients every `gradient_accumulation_steps` steps
-        if (step + 1) % gradient_accumulation_steps == 0:
-            if max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)  # Gradient clipping
-            optimizer.step()
-            optimizer.zero_grad()
-
-        # Log metrics
-        loss_value = loss.item() * gradient_accumulation_steps  # Scale back for logging
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            sys.exit(1)
-
-        metric_logger.update(loss=loss_value)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        if len(optimizer.param_groups) > 1:  # If there are multiple parameter groups
-            metric_logger.update(lr_mbart=round(float(optimizer.param_groups[1]["lr"]), 8))
-
-        if (step + 1) % 10 == 0 and args.visualize and utils.is_main_process():
-            utils.visualization(model.module.visualize())
-        
-    # Gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
-
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 def evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterion,  config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device):
     model.eval()
@@ -523,7 +350,7 @@ def evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterio
         # metrics_dict = compute_metrics(hypothesis=args.output_dir+'/tmp_pres.txt',
         #                    references=[args.output_dir+'/tmp_refs.txt'],no_skipthoughts=True,no_glove=True)
         print('*'*80)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, tgt_pres, tgt_refs
 
 if __name__ == '__main__':
 
@@ -557,7 +384,3 @@ if __name__ == '__main__':
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args, config)
-
-'''
-CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch --nproc_per_node=4 --master_port=1236 --use_env train_slt.py --batch-size 2 --epochs 200 --opt sgd --lr 0.01 --output_dir out/Gloss-Free 
-'''

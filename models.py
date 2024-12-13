@@ -26,7 +26,7 @@ from transformers.modeling_outputs import (
 )
 from transformers.models.mbart.modeling_mbart import shift_tokens_right
 
-from transformers.models.mbart.modeling_mbart import MBartLearnedPositionalEmbedding, MBartEncoderLayer, _expand_mask
+from transformers.models.mbart.modeling_mbart import MBartLearnedPositionalEmbedding, MBartEncoderLayer
 
 from collections import OrderedDict
 
@@ -65,22 +65,24 @@ class PositionalEncoding(nn.Module):
     def forward(self, token_embedding: Tensor):
         return self.dropout(token_embedding + self.pos_embedding[:token_embedding.size(0), :])
 
-
 def make_resnet(name='resnet18'):
     if name == 'resnet18':
-        model = torchvision.models.resnet18(pretrained=True)
+        model = torchvision.models.resnet18(pretrained= False )
     elif name == 'resnet34':
-        model = torchvision.models.resnet34(pretrained=True)
+        model = torchvision.models.resnet34(pretrained=False)
     elif name == 'resnet50':
-        model = torchvision.models.resnet50(pretrained=True)
+        model = torchvision.models.resnet50(pretrained=False)
     elif name == 'resnet101':
-        model = torchvision.models.resnet101(pretrained=True)
+        model = torchvision.models.resnet101(pretrained=False)
     else:
-        raise Exception('There are no supported resnet model {}.'.format(_('resnet')))
-
+        raise Exception('There are no supported resnet model {}.'.format(('resnet')))
+    weights_path = "resnet18-f37072fd.pth"
+    state_dict = torch.load(weights_path, map_location="cpu")
+    model.load_state_dict(state_dict)
     inchannel = model.fc.in_features
     model.fc = nn.Identity()
     return model
+
 
 class resnet(nn.Module):
     def __init__(self):

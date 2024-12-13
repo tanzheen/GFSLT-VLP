@@ -34,7 +34,7 @@ try:
 except:
     pass
 from itertools import groupby
-import tensorflow as tf
+#import tensorflow as tf
 
 import matplotlib.pyplot as plt  # For graphics
 import seaborn as sns
@@ -400,40 +400,40 @@ def GlossPadding(input_ids, gt_gloss, attention_mask):
         new_mask.append(MASK)
     return torch.tensor(new_input_ids), torch.tensor(new_gt_gloss), torch.tensor(new_mask)
 
-def ctc_decode(gloss_probabilities,sgn_lengths):
-    gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
-    # tf_gloss_probabilities = np.concatenate(
-    #     (gloss_probabilities[:, :, 1:], gloss_probabilities[:, :, 0, None]),
-    #     axis=-1,
-    # )
+# def ctc_decode(gloss_probabilities,sgn_lengths):
+#     gloss_probabilities = gloss_probabilities.cpu().detach().numpy()
+#     # tf_gloss_probabilities = np.concatenate(
+#     #     (gloss_probabilities[:, :, 1:], gloss_probabilities[:, :, 0, None]),
+#     #     axis=-1,
+#     # )
 
-    # ctc_decode, _ = tf.nn.ctc_greedy_decoder(
-    #     inputs=gloss_probabilities,
-    #     sequence_length=np.array(sgn_lengths),
-    #     blank_index=SI_IDX,
-    #     merge_repeated = False
-    # )
-    ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
-                        inputs=gloss_probabilities,
-                        sequence_length=np.array(sgn_lengths),
-                        beam_width=5,
-                        top_paths=1,
-                        )
-    ctc_decode = ctc_decode[0]
-    # Create a decoded gloss list for each sample
-    tmp_gloss_sequences = [[] for i in range(gloss_probabilities.shape[1])]
-    for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
-        if ctc_decode.values[value_idx].numpy() != SI_IDX:
-            tmp_gloss_sequences[dense_idx[0]].append(
-                ctc_decode.values[value_idx].numpy()
-            )
+#     # ctc_decode, _ = tf.nn.ctc_greedy_decoder(
+#     #     inputs=gloss_probabilities,
+#     #     sequence_length=np.array(sgn_lengths),
+#     #     blank_index=SI_IDX,
+#     #     merge_repeated = False
+#     # )
+#     ctc_decode, _ = tf.nn.ctc_beam_search_decoder(
+#                         inputs=gloss_probabilities,
+#                         sequence_length=np.array(sgn_lengths),
+#                         beam_width=5,
+#                         top_paths=1,
+#                         )
+#     ctc_decode = ctc_decode[0]
+#     # Create a decoded gloss list for each sample
+#     tmp_gloss_sequences = [[] for i in range(gloss_probabilities.shape[1])]
+#     for (value_idx, dense_idx) in enumerate(ctc_decode.indices):
+#         if ctc_decode.values[value_idx].numpy() != SI_IDX:
+#             tmp_gloss_sequences[dense_idx[0]].append(
+#                 ctc_decode.values[value_idx].numpy()
+#             )
     
-    decoded_gloss_sequences = []
-    for seq_idx in range(0, len(tmp_gloss_sequences)):
-        decoded_gloss_sequences.append(
-            [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
-        )
-    return decoded_gloss_sequences
+#     decoded_gloss_sequences = []
+#     for seq_idx in range(0, len(tmp_gloss_sequences)):
+#         decoded_gloss_sequences.append(
+#             [x[0] for x in groupby(tmp_gloss_sequences[seq_idx])]
+#         )
+#     return decoded_gloss_sequences
 
 def data_augmentation(resize=(320, 240), crop_size=224, is_train=True):
     if is_train:

@@ -1,7 +1,13 @@
+import sys
+print("Python executable:", sys.executable)
+print("Python version:", sys.version)
+print("Environment paths:", sys.path)
+import hftrim
 
 from transformers import MBartForConditionalGeneration, MBartTokenizer, MBartConfig
-
-from hftrim.ModelTrimmers import MBartTrimmer
+import sys
+sys.path.append('./')
+import hftrim.ModelTrimmers.MBartTrimmer as MBartTrimmer
 
 import utils
 from hftrim.TokenizerTrimmer import TokenizerTrimmer

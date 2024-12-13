@@ -9,3 +9,7 @@ core*
 wandb
 demo/
 backup
+pretrain_models/MBart_trimmed/added_tokens.json
+/pretrain_models
+/pretrain_models
+pretrain_models/mytran/config.json
