@@ -8,7 +8,7 @@ import math
 from torchvision import transforms
 from PIL import Image
 import cv2
-
+import os 
 import random
 import numpy as np
 
@@ -119,9 +119,24 @@ class S2T_Dataset(Dataset.Dataset):
             tmp = sorted(random.sample(range(len(paths)), k=self.max_length))
             new_paths = []
             for i in tmp:
-                new_paths.append(paths[i])
+                actl_path = paths[i]
+                if self.config.training.tokens:
+                    actl_path = os.path.splitext(actl_path)[0] + ".pth"
+                new_paths.append(actl_path)
             paths = new_paths
-    
+
+        if self.config['training']['tokens']:
+            tensors = torch.zeros (len(paths), 768)
+            for i, tensor_path in enumerate(paths):
+                tensor_path= os.path.splitext(tensor_path)[0] + ".pth"
+                tensor = torch.load(tensor_path)
+                tensors[i, : ] = tensor 
+            
+            return tensors
+
+            
+
+
         imgs = torch.zeros(len(paths),3, self.args.input_size,self.args.input_size)
         crop_rect, resize = utils.data_augmentation(resize=(self.args.resize, self.args.resize), crop_size=self.args.input_size, is_train=(self.phase=='train'))
 
@@ -159,17 +174,34 @@ class S2T_Dataset(Dataset.Dataset):
         left_pad = 8
         right_pad = int(np.ceil(max_len / 4.0)) * 4 - max_len + 8
         max_len = max_len + left_pad + right_pad
-        padded_video = [torch.cat(
-            (
-                vid[0][None].expand(left_pad, -1, -1, -1),
-                vid,
-                vid[-1][None].expand(max_len - len(vid) - left_pad, -1, -1, -1),
-            )
-            , dim=0)
-            for vid in img_tmp]
+
+        if self.config['training']['tokens']:
+            padded_video = [torch.cat(
+                (
+                    vid[0][None].expand(left_pad, -1),  # Padding at the start with the first frame.
+                    vid,
+                    vid[-1][None].expand(max_len - len(vid) - left_pad, -1),  # Padding at the end.
+                ), dim=0) for vid in img_tmp]
+            
+            # Ensure each video has the same length.
+            img_tmp = [padded_video[i][0:video_length[i], :] for i in range(len(padded_video))]
         
-        img_tmp = [padded_video[i][0:video_length[i],:,:,:] for i in range(len(padded_video))]
+        else: 
+
+            padded_video = [torch.cat(
+                (
+                    vid[0][None].expand(left_pad, -1, -1, -1),
+                    vid,
+                    vid[-1][None].expand(max_len - len(vid) - left_pad, -1, -1, -1),
+                )
+                , dim=0)
+                for vid in img_tmp]
+            
+            img_tmp = [padded_video[i][0:video_length[i],:,:,:] for i in range(len(padded_video))]
         
+
+
+
         for i in range(len(img_tmp)):
             src_length_batch.append(len(img_tmp[i]))
         src_length_batch = torch.tensor(src_length_batch)
