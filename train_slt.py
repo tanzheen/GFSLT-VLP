@@ -163,7 +163,7 @@ def get_args_parser():
     return parser
 
 def main(args, config):
-    utils.init_distributed_mode(args)
+    #utils.init_distributed_mode(args)
     print(args)
 
     device = torch.device(args.device)
@@ -174,38 +174,39 @@ def main(args, config):
     np.random.seed(seed)
     random.seed(seed)
     cudnn.benchmark = False
-
+    
+    print(config)
     print(f"Creating dataset:")
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
     train_data = S2T_Dataset(path=config['data']['train_label_path'], tokenizer = tokenizer, config=config, args=args, phase='train')
     print(train_data)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_data,shuffle=True)
+    #train_sampler = torch.utils.data.distributed.DistributedSampler(train_data,shuffle=True)
     train_dataloader = DataLoader(train_data,
                                  batch_size=args.batch_size, 
                                  num_workers=args.num_workers, 
                                  collate_fn=train_data.collate_fn,
-                                 sampler=train_sampler, 
+                                 #sampler=train_sampler, 
                                  pin_memory=args.pin_mem)
     
     
     dev_data = S2T_Dataset(path=config['data']['dev_label_path'], tokenizer = tokenizer, config=config, args=args, phase='val')
     print(dev_data)
-    dev_sampler = torch.utils.data.distributed.DistributedSampler(dev_data,shuffle=False)
+    #dev_sampler = torch.utils.data.distributed.DistributedSampler(dev_data,shuffle=False)
     dev_dataloader = DataLoader(dev_data,
                                  batch_size=args.batch_size,
                                  num_workers=args.num_workers, 
                                  collate_fn=dev_data.collate_fn,
-                                 sampler=dev_sampler, 
+                                 #sampler=dev_sampler, 
                                  pin_memory=args.pin_mem)
     
     test_data = S2T_Dataset(path=config['data']['test_label_path'], tokenizer = tokenizer, config=config, args=args, phase='test')
     print(test_data)
-    test_sampler = torch.utils.data.distributed.DistributedSampler(test_data,shuffle=False)
+    #test_sampler = torch.utils.data.distributed.DistributedSampler(test_data,shuffle=False)
     test_dataloader = DataLoader(test_data,
                                  batch_size=args.batch_size,
                                  num_workers=args.num_workers, 
                                  collate_fn=test_data.collate_fn,
-                                 sampler=test_sampler, 
+                                 #sampler=test_sampler, 
                                  pin_memory=args.pin_mem)
     
     print(f"Creating model:")
@@ -249,10 +250,10 @@ def main(args, config):
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
 
     model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-        model_without_ddp = model.module
+    # if args.distributed:
+    #     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+    #     model_without_ddp = model.module
     n_parameters = utils.count_parameters_in_MB(model_without_ddp)
     print(f'number of params: {n_parameters}M')
 
@@ -304,8 +305,8 @@ def main(args, config):
     max_accuracy = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
+        # if args.distributed:
+        #     train_sampler.set_epoch(epoch)
         
         train_stats = train_one_epoch(args, model, criterion, train_dataloader, optimizer, device, epoch, config, loss_scaler, mixup_fn)
         lr_scheduler.step(epoch)
@@ -365,6 +366,7 @@ def main(args, config):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+
 # def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss,
 #                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
 #                     device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 0,
@@ -405,10 +407,12 @@ def main(args, config):
 
 #     return  {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+
 def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 0,
-                    set_training_mode=True, gradient_accumulation_steps=4):
+                    set_training_mode=True, gradient_accumulation_steps=1):
+
     model.train(set_training_mode)
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -420,23 +424,25 @@ def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss
 
     for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # Forward pass
+        #print("src_input shape:", src_input['input_ids'].shape)
+        #print("tgt_input shape:", tgt_input['input_ids'].shape)
         out_logits = model(src_input, tgt_input)
         label = tgt_input['input_ids'].reshape(-1)
         logits = out_logits.reshape(-1, out_logits.shape[-1])
-        loss = criterion(logits, label.to(device, non_blocking=True)) / gradient_accumulation_steps  # Scale loss
+        loss = criterion(logits, label.to(device, non_blocking=True))   # Scale loss
 
         # Backward pass
         loss.backward()
 
         # Perform optimizer step and zero gradients every `gradient_accumulation_steps` steps
-        if (step + 1) % gradient_accumulation_steps == 0:
-            if max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)  # Gradient clipping
-            optimizer.step()
-            optimizer.zero_grad()
+        # if (step + 1) % gradient_accumulation_steps == 0:
+        if max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)  # Gradient clipping
+        optimizer.step()
+        optimizer.zero_grad()
 
         # Log metrics
-        loss_value = loss.item() * gradient_accumulation_steps  # Scale back for logging
+        loss_value = loss.item()  # Scale back for logging
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
@@ -454,6 +460,7 @@ def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss
     print("Averaged stats:", metric_logger)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
 
 def evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterion,  config, UNK_IDX, SPECIAL_SYMBOLS, PAD_IDX, device):
     model.eval()

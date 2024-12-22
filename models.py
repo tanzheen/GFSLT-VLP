@@ -87,10 +87,10 @@ def make_resnet(name='resnet18'):
 class resnet(nn.Module):
     def __init__(self):
         super(resnet, self).__init__()
-        self.resnet = make_resnet(name='resnet18')
+        #self.resnet = make_resnet(name='resnet18')
 
     def forward(self, x, lengths):
-        x = self.resnet(x)
+        #x = self.resnet(x)
         x_batch = []
         start = 0
         for length in lengths:
@@ -237,7 +237,8 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet() # InceptionI3d()
-        self.conv_1d = TemporalConv(input_size=512, hidden_size=1024, conv_type=2)
+      
+        self.conv_1d = TemporalConv(input_size=768, hidden_size= 768, conv_type=2)
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -305,7 +306,7 @@ class gloss_free_model(nn.Module):
         self.mbart = config_decoder(config)
  
         if config['model']['sign_proj']:
-            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
+            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=768, config = config)
             self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
         else:
             self.sign_emb = nn.Identity()
@@ -324,7 +325,8 @@ class gloss_free_model(nn.Module):
     def forward(self,src_input, tgt_input ):
         
         inputs_embeds, attention_mask = self.share_forward(src_input)
-
+        #print('inputs', inputs_embeds.shape)
+        #print(tgt_input['input_ids'].shape)
         out = self.mbart(inputs_embeds = inputs_embeds,
                     attention_mask = attention_mask.cuda(),
                     # decoder_input_ids = tgt_input['input_ids'].cuda(),
