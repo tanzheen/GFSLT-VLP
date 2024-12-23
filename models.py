@@ -87,10 +87,10 @@ def make_resnet(name='resnet18'):
 class resnet(nn.Module):
     def __init__(self):
         super(resnet, self).__init__()
-        #self.resnet = make_resnet(name='resnet18')
+        self.resnet = make_resnet(name='resnet18')
 
     def forward(self, x, lengths):
-        #x = self.resnet(x)
+        x = self.resnet(x)
         x_batch = []
         start = 0
         for length in lengths:
@@ -238,7 +238,7 @@ class FeatureExtracter(nn.Module):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet() # InceptionI3d()
       
-        self.conv_1d = TemporalConv(input_size=768, hidden_size= 768, conv_type=2)
+        self.conv_1d = TemporalConv(input_size=512, hidden_size= 1024 , conv_type=2)
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -306,11 +306,21 @@ class gloss_free_model(nn.Module):
         self.mbart = config_decoder(config)
  
         if config['model']['sign_proj']:
-            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=768, config = config)
+            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=1024, config = config)
             self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
         else:
             self.sign_emb = nn.Identity()
             self.embed_scale = 1.0
+        
+        # load new weights from pretrain model
+        backbone_weights = torch.load("backbone_weights.pth", map_location='cpu')
+        backbone_weights= {k.replace("backbone.", "", 1): v for k, v in backbone_weights.items()}
+
+        self.backbone.load_state_dict(backbone_weights)
+        sign_emb_weights = torch.load("signemb_weights.pth", map_location='cpu')
+        sign_emb_weights= {k.replace("sign_emb.", "", 1): v for k, v in sign_emb_weights.items()}
+        self.sign_emb.load_state_dict(sign_emb_weights)
+
         
     def share_forward(self, src_input):
         

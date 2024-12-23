@@ -9,9 +9,9 @@ data:
 training:
   wandb: disabled # online or disabled
   scale_embedding: False
-  tokens: True
+  tokens: False
 model:
   tokenizer: pretrain_models/MBart_trimmed
-  transformer: pretrain_models/MBart_trimmed
-  visual_encoder: pretrain_models/mytran
+  transformer: pretrain_models/mytran
+  visual_encoder: pretrain_models/MBart_trimmed
   sign_proj: True

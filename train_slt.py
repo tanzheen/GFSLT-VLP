@@ -102,6 +102,8 @@ def get_args_parser():
                         help='warmup learning rate (default: 1e-6)')
     parser.add_argument('--min-lr', type=float, default=1.0e-08, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
+    parser.add_argument('--weight_decay', type=float, default=1e-4, metavar='WD',
+                        help = 'weight decay (default: 1e-4)')
     
     parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                         help='epoch interval to decay LR')
@@ -186,7 +188,8 @@ def main(args, config):
                                  num_workers=args.num_workers, 
                                  collate_fn=train_data.collate_fn,
                                  #sampler=train_sampler, 
-                                 pin_memory=args.pin_mem)
+                                 pin_memory=args.pin_mem, 
+                                 shuffle = True )
     
     
     dev_data = S2T_Dataset(path=config['data']['dev_label_path'], tokenizer = tokenizer, config=config, args=args, phase='val')
@@ -220,32 +223,8 @@ def main(args, config):
         print('Load parameters for Visual Encoder...')
         print('***********************************')
         state_dict = torch.load(args.finetune, map_location='cpu')
-        new_state_dict = OrderedDict()
-        for k, v in state_dict['model'].items():
-            if 'conv_2d' in k or 'conv_1d' in k:
-                k = 'backbone.'+'.'.join(k.split('.')[2:])
-                new_state_dict[k] = v
-            if 'trans_encoder' in k:
-                k = 'mbart.model.encoder.'+'.'.join(k.split('.')[2:])
-                new_state_dict[k] = v
-            
-            if 'text_decoder' in state_dict:
-                for k, v in state_dict['text_decoder'].items():
-                    if 'decoder' in k:
-                        k = 'mbart.model.decoder.'+'.'.join(k.split('.')[2:])
-                        new_state_dict[k] = v
-            
-        # *replace the word embedding
-        model_dict = torch.load(config['model']['transformer']+'/pytorch_model.bin', map_location='cpu')
-        for k, v in model_dict.items():
-            if 'decoder.embed_tokens.weight' in k:
-                k = 'mbart.' + k
-                new_state_dict[k] = v
-            if 'decoder.embed_positions.weight' in k:
-                k = 'mbart.' + k
-                new_state_dict[k] = v
 
-        ret = model.load_state_dict(new_state_dict, strict=False)
+        ret = model.load_state_dict(state_dict, strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
 
@@ -410,7 +389,7 @@ def main(args, config):
 
 def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 0,
+                    device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 1.0,
                     set_training_mode=True, gradient_accumulation_steps=1):
 
     model.train(set_training_mode)
@@ -435,11 +414,11 @@ def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss
         loss.backward()
 
         # Perform optimizer step and zero gradients every `gradient_accumulation_steps` steps
-        # if (step + 1) % gradient_accumulation_steps == 0:
-        if max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)  # Gradient clipping
-        optimizer.step()
-        optimizer.zero_grad()
+        if (step + 1) % gradient_accumulation_steps == 0:
+            if max_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)  # Gradient clipping
+            optimizer.step()
+            optimizer.zero_grad()
 
         # Log metrics
         loss_value = loss.item()  # Scale back for logging
