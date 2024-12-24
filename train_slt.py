@@ -512,6 +512,9 @@ def evaluate(args, dev_dataloader, model, model_without_ddp, tokenizer, criterio
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 if __name__ == '__main__':
+    torch.cuda.empty_cache()
+    torch.cuda.reset_max_memory_allocated()
+    torch.cuda.reset_max_memory_cached()
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
