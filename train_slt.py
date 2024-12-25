@@ -390,7 +390,7 @@ def main(args, config):
 def train_one_epoch(args, model: torch.nn.Module, criterion: nn.CrossEntropyLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, config, loss_scaler, mixup_fn=None, max_norm: float = 1.0,
-                    set_training_mode=True, gradient_accumulation_steps=1):
+                    set_training_mode=True, gradient_accumulation_steps=4):
 
     model.train(set_training_mode)
 
